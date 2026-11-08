@@ -81,9 +81,36 @@ def connect(data: str | Path | dict[str, pd.DataFrame]) -> duckdb.DuckDBPyConnec
 
 
 def run(con: duckdb.DuckDBPyConnection, definition: Definition) -> set[int]:
-    """The admissions (``hadm_id``) that meet a definition."""
-    rows = con.execute(definition.sql).fetchall()
-    return {int(r[0]) for r in rows if r[0] is not None}
+    """The admissions (``hadm_id``) that meet a definition.
+
+    The query must return exactly one column of integer admission ids. A second column
+    used to be ignored silently (``SELECT hadm_id, subject_id`` read the first one) and
+    a query that cannot run surfaced as a DuckDB traceback, so both are errors that name
+    the definition instead.
+    """
+    try:
+        cursor = con.execute(definition.sql)
+    except duckdb.Error as exc:
+        raise ValueError(f"definition {definition.name!r} failed: {exc}") from exc
+    columns = [str(column[0]) for column in cursor.description or []]
+    if len(columns) != 1:
+        listed = f": {', '.join(columns)}" if columns else ""
+        raise ValueError(
+            f"definition {definition.name!r} must return one column (hadm_id), not"
+            f" {len(columns)}{listed}"
+        )
+    ids: set[int] = set()
+    for row in cursor.fetchall():
+        value = row[0]
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"definition {definition.name!r} returned a non-integer admission id"
+                f" ({type(value).__name__}: {value!r})"
+            )
+        ids.add(value)
+    return ids
 
 
 def admissions_frame(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
