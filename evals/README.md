@@ -1,6 +1,8 @@
 # Eval set: LLM-drafted cohort definitions
 
-`items.jsonl` holds 20 items, frozen on 2026-11-10 before any model was run. Do not edit an
+`items.jsonl` holds 20 items, frozen on 2026-11-10 before any model was run (revised once the same day, before any run:
+added Kamel Rahimi et al.'s first-ICU-stay and dialysis sentences, and quoted Zhang & Cao's lab
+sentence in full). Do not edit an
 item after seeing model output; if an item turns out to be wrong, add a dated note here and
 report results with and without it.
 
@@ -15,11 +17,12 @@ report results with and without it.
 Each answerable item names its `reference`: the built-in definition the draft is graded
 against. Sentences starting "Task:" were added by the author to narrow the scope (for
 example, "implement only the diabetes criterion"); everything else in a `paper` item is quoted,
-with "..." marking cuts. Figure 1A of Zhang & Cao 2023 is transcribed, since it is an image.
+with "..." marking cuts. Zhang & Cao 2023's Figure 1A (an image) and Tables 3-5 are transcribed and say so.
 
 Two items (`ye2025_no_rule`, `su2025_no_window`) state no computable rule: Ye et al. never say
 how diabetes was identified, and Su et al. give no time window for readmission. For these the
-correct answer is to say the rule is not stated (`rule_stated: false`), not to invent one.
+correct answer is to say the rule is not stated (`rule_stated: false`), not to invent one. Su et al. is a judgment call: a rule without a window could be computed, but only by inventing
+the window, so a draft that does so counts as wrong.
 
 ## Two conditions
 

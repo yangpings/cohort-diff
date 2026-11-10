@@ -40,4 +40,4 @@ def test_texts_are_short_cited_excerpts() -> None:
     for item in _items():
         assert item["source"] in {"author", "code", "paper"}
         assert str(item["citation"]).strip()
-        assert 5 <= len(str(item["text"]).split()) <= 250
+        assert 5 <= len(str(item["text"]).split()) <= 300
