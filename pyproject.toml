@@ -19,6 +19,11 @@ cohort-diff = "cohort_diff.cli:main"
 Repository = "https://github.com/yangpings/cohort-diff"
 Issues = "https://github.com/yangpings/cohort-diff/issues"
 
+[project.optional-dependencies]
+llm = [
+    "anthropic>=2.7.0",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
