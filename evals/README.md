@@ -42,3 +42,11 @@ Both conditions also give the model the table and column names. Neither ever sen
 
 Also reported: Jaccard with the reference on the MIMIC-IV demo (computed locally). For the two
 unanswerable items, the grade is `rule_stated == false`.
+
+## Run log
+
+- `runs/20261110T113222Z.jsonl` (pilot 1, 6 calls, US$0.07): graded on synthetic data whose
+  `labevents.valueuom` was blank. Three correct-looking drafts filtered on `valueuom = 'mg/dL'`
+  and scored Jaccard 0.0. The synthetic data now records MIMIC-IV's units; regraded on it, those
+  drafts score 0.999 (no rounding of the 0.3 mg/dL comparison) and Opus 5.5's condition-B
+  draft is exact. Kept as a record; pilot 2 is the first run graded on the fixed data.

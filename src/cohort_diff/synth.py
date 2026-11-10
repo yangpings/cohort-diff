@@ -30,6 +30,18 @@ LAB_ITEMS: list[tuple[int, str, str, str, float, float, float, float]] = [
     (51003, "Troponin T", "Blood", "Chemistry", 0.02, 0.02, 0.15, 3.0),
 ]
 
+# Units as recorded in MIMIC-IV labevents.valueuom.
+UNITS = {
+    50912: "mg/dL",
+    50971: "mEq/L",
+    50983: "mEq/L",
+    51301: "K/uL",
+    51222: "g/dL",
+    50813: "mmol/L",
+    50852: "%",
+    51003: "ng/mL",
+}
+
 # ICD-10 codes; the last group is assigned mostly to patients who die.
 COMMON_CODES = ["I10", "E119", "E785", "N179", "J189", "I509", "K219", "F329"]
 TERMINAL_CODES = ["R6521", "I469", "Z515"]  # septic shock, cardiac arrest, palliative care
@@ -130,7 +142,7 @@ def generate(config: SynthConfig | None = None) -> dict[str, pd.DataFrame]:
                         "storetime": store if rng.random() > 0.02 else pd.NaT,
                         "value": f"{value:.2f}",
                         "valuenum": round(value, 2),
-                        "valueuom": "",
+                        "valueuom": UNITS[itemid],
                         "flag": None,
                     }
                 )
