@@ -1,6 +1,6 @@
 [project]
 name = "cohort-diff"
-version = "0.1.0"
+version = "0.2.0"
 description = "How different are 'the same' EHR cohorts? Run published definitions side by side on MIMIC-IV and diff them."
 readme = "README.md"
 authors = [{ name = "Eric Yang", email = "159638721+yangpings@users.noreply.github.com" }]
