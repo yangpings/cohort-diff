@@ -8,10 +8,12 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from cohort_diff import engine, grade, registry
+from cohort_diff import engine, grade, llm, registry
 from cohort_diff.llm import Draft
 from cohort_diff.synth import SynthConfig, generate
 
@@ -19,6 +21,14 @@ ROOT = Path(__file__).resolve().parent.parent
 ITEMS = ROOT / "evals" / "items.jsonl"
 TESTS = ROOT / "tests"
 EVAL_DATA = SynthConfig(n_patients=2000, seed=0)  # the eval's synthetic data, fixed
+RUNS = ROOT / "evals" / "runs"
+# US$ per million tokens (input, output), first-party API list prices on 2026-11-10.
+# Thinking tokens are billed as output and are included in output_tokens.
+PRICES = {
+    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-sonnet-5-5": (2.00, 10.00),
+    "claude-opus-5-5": (4.00, 20.00),
+}
 
 
 def load_items() -> list[dict[str, Any]]:
@@ -76,14 +86,63 @@ def selfcheck() -> int:
     return 1 if failures else 0
 
 
+def run(args: argparse.Namespace) -> int:
+    """Draft, grade and log. Every draft is a line in a new file; nothing is overwritten."""
+    unknown = [m for m in args.models if m not in PRICES]
+    if unknown:
+        raise SystemExit(f"no price for {unknown}; add it to PRICES first")
+    items = [i for i in load_items() if not args.items or i["id"] in args.items]
+    con = engine.connect(generate(EVAL_DATA))
+    references = {
+        str(i["reference"]): grade.reference_ids(con, str(i["reference"]))
+        for i in items
+        if i["answerable"]
+    }
+    client = llm.anthropic_client()
+    RUNS.mkdir(parents=True, exist_ok=True)
+    out = RUNS / f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}.jsonl"
+    total = 0.0
+    with out.open("x", encoding="utf-8") as f:
+        for model in args.models:
+            for item in items:
+                for condition in args.conditions:
+                    if condition == "B" and not item["answerable"]:
+                        continue
+                    for sample in range(args.samples):
+                        d = llm.draft(client, item, condition, model, args.effort, sample)
+                        ref = references.get(str(item["reference"]))
+                        g = grade.grade(d, item, con, ref, TESTS if args.tests else None)
+                        price_in, price_out = PRICES[model]
+                        cost = (d.input_tokens * price_in + d.output_tokens * price_out) / 1e6
+                        total += cost
+                        row = {"draft": asdict(d), "grade": asdict(g), "cost_usd": round(cost, 5)}
+                        f.write(json.dumps(row) + "\n")
+                        f.flush()
+                        level = (
+                            4 if g.tests else 3 if g.exact else 2 if g.runs else 1 if g.valid else 0
+                        )
+                        print(f"{model} {item['id']} {condition} s{sample}: level {level} "
+                              f"abstained={g.abstained} jaccard={g.jaccard} ${cost:.4f} "
+                              f"{d.error or g.detail}")  # fmt: skip
+    print(f"wrote {out.relative_to(ROOT)}; total ${total:.4f}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("selfcheck", help="grade every reference against itself, plus a planted bug")
+    sub.add_parser("selfcheck", help="grade every reference against itself, plus planted bugs")
+    r = sub.add_parser("run", help="draft with the API, grade and log (costs money)")
+    r.add_argument("--models", nargs="+", required=True)
+    r.add_argument("--items", nargs="*", default=[], help="item ids (default: all 20)")
+    r.add_argument("--conditions", nargs="+", default=list(llm.CONDITIONS), choices=llm.CONDITIONS)
+    r.add_argument("--samples", type=int, default=1)
+    r.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh", "max"])
+    r.add_argument("--tests", action="store_true", help="also run level 4 (slow)")
     args = parser.parse_args()
     if args.command == "selfcheck":
         return selfcheck()
-    return 2
+    return run(args)
 
 
 if __name__ == "__main__":
