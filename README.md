@@ -183,7 +183,7 @@ Full MIMIC-IV (about 546,000 admissions) will be timed once credentialed.
 
 | Data | Condition | Admissions | Wall time (s) | Machine |
 | --- | --- | --- | --- | --- |
-| MIMIC-IV demo | aki / diabetes / readmission | 275 | 1.6 / 1.5 / 1.3 (includes 1,000 bootstrap resamples and Python start-up) | Intel i7-12800HX, 64 GB RAM, Windows |
+| MIMIC-IV demo | aki / diabetes / readmission | 275 | 3.1 / 2.9 / 1.8 (7 / 6 / 5 definitions; includes 1,000 bootstrap resamples and Python start-up) | Intel i7-12800HX, 64 GB RAM, Windows |
 
 ### Extension: LLM-drafted definitions (planned)
 
