@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from cohort_diff import engine, grade, llm, registry
 from cohort_diff.llm import Draft
@@ -128,6 +131,222 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
+MODELS = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"]
+FULL_RUN = 114  # drafts per model in a full run: (20 A + 18 B) x 3 samples
+
+
+def correct(g: dict[str, Any]) -> bool:
+    """Exact on synthetic data and no failing reference test (n/a counts as passed)."""
+    return bool(g["exact"]) and g["tests"] is not False
+
+
+def category(row: dict[str, Any]) -> str:
+    """One failure category per draft, first match wins; "" for a correct draft."""
+    d, g = row["draft"], row["grade"]
+    if d["error"]:
+        return "API error, refusal or cut off"
+    if not g["answerable"]:
+        return "" if g["abstained"] else "computed a rule where the text states none"
+    if not g["runs"]:
+        return "SQL error"
+    if correct(g):
+        return ""
+    if g["exact"]:
+        return "right cohort on synthetic data, fails a reference test"
+    if g["jaccard"] >= 0.99:
+        return "near miss (Jaccard >= 0.99)"
+    return "different cohort (Jaccard < 0.99)"
+
+
+def load_full_runs() -> list[dict[str, Any]]:
+    rows = []
+    for path in sorted(RUNS.glob("*.jsonl")):
+        file_rows = [
+            json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line
+        ]
+        if len(file_rows) != FULL_RUN:
+            continue  # pilots and interrupted runs
+        for r in file_rows:
+            r["file"] = path.name
+        rows += file_rows
+    return rows
+
+
+def item_bootstrap(rows: list[dict[str, Any]], seed: int = 0, n: int = 2000) -> tuple[float, float]:
+    """95% interval for the share correct, resampling whole items.
+
+    A model's samples of one item are not independent, so items, not drafts, are resampled.
+    """
+    by_item: dict[str, list[bool]] = {}
+    for r in rows:
+        by_item.setdefault(r["draft"]["item_id"], []).append(correct(r["grade"]))
+    items = sorted(by_item)
+    rng = random.Random(seed)
+    stats = []
+    for _ in range(n):
+        drawn = [x for i in rng.choices(items, k=len(items)) for x in by_item[i]]
+        stats.append(sum(drawn) / len(drawn))
+    low, high = np.percentile(stats, [2.5, 97.5])
+    return float(low), float(high)
+
+
+def paired_difference(
+    rows: list[dict[str, Any]], a: tuple[str, str], b: tuple[str, str], seed: int = 0, n: int = 2000
+) -> tuple[float, float, float]:
+    """Share correct of b minus a, item by item, with an item-bootstrap 95% interval."""
+
+    def rate(model: str, cond: str, item: str) -> float:
+        xs = [
+            correct(r["grade"])
+            for r in rows
+            if r["draft"]["model"] == model
+            and r["draft"]["condition"] == cond
+            and r["draft"]["item_id"] == item
+        ]
+        return sum(xs) / len(xs)
+
+    items = sorted({r["draft"]["item_id"] for r in rows if r["grade"]["answerable"]})
+    diffs = {i: rate(*b, i) - rate(*a, i) for i in items}
+    rng = random.Random(seed)
+    boot = [float(np.mean([diffs[i] for i in rng.choices(items, k=len(items))])) for _ in range(n)]
+    low, high = np.percentile(boot, [2.5, 97.5])
+    return float(np.mean(list(diffs.values()))), float(low), float(high)
+
+
+def _share(rows: list[dict[str, Any]]) -> float:
+    return sum(correct(r["grade"]) for r in rows) / len(rows)
+
+
+def analyze() -> int:
+    rows = load_full_runs()
+    files = sorted({r["file"] for r in rows})
+    items = {i["id"]: i for i in load_items()}
+    answerable = [r for r in rows if r["grade"]["answerable"]]
+    cost = sum(r["cost_usd"] for r in rows)
+    out = [
+        "# Part 7 results",
+        "",
+        f"Full runs: {', '.join(files)} ({len(rows)} drafts, US${cost:.2f}).",
+        "Correct = the same admissions as the reference on synthetic data"
+        " and no failing reference test.",
+        "Intervals: 95%, bootstrap over the 18 items (a draft's samples are not independent).",
+        "",
+        "## Share of drafts correct",
+        "",
+        "| Model | Condition | Correct | 95% CI | Drafts | By run |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for model in MODELS:
+        for cond in ("A", "B"):
+            sel = [
+                r
+                for r in answerable
+                if r["draft"]["model"] == model and r["draft"]["condition"] == cond
+            ]
+            k = sum(correct(r["grade"]) for r in sel)
+            low, high = item_bootstrap(sel)
+            by_run = " / ".join(
+                f"{_share([r for r in sel if r['file'] == f]):.0%}"
+                for f in files
+                if any(r["file"] == f for r in sel)
+            )
+            out.append(
+                f"| {model} | {cond} | {k / len(sel):.0%} | {low:.0%}-{high:.0%} | {len(sel)} "
+                f"| {by_run} |"
+            )
+    out += [
+        "",
+        "## Paired differences (share correct, item by item)",
+        "",
+        "| Comparison | Difference | 95% CI |",
+        "| --- | --- | --- |",
+    ]
+    pairs = [((m, "A"), (m, "B")) for m in MODELS] + [
+        ((MODELS[0], "B"), (MODELS[2], "B")),
+        ((MODELS[0], "A"), (MODELS[2], "A")),
+    ]
+    for a, b in pairs:
+        diff, low, high = paired_difference(rows, a, b)
+        out.append(
+            f"| {b[0]} {b[1]} minus {a[0]} {a[1]} | {diff:+.0%} | {low:+.0%} to {high:+.0%} |"
+        )
+    out += [
+        "",
+        "## Items with no computable rule: share that said so",
+        "",
+        "| Item | " + " | ".join(MODELS) + " |",
+        "| --- |" + " --- |" * len(MODELS),
+    ]
+    for iid, item in items.items():
+        if item["answerable"]:
+            continue
+        cells = []
+        for model in MODELS:
+            sel = [r for r in rows if r["draft"]["model"] == model and r["draft"]["item_id"] == iid]
+            cells.append(f"{sum(bool(r['grade']['abstained']) for r in sel)}/{len(sel)}")
+        out.append(f"| {iid} {item['label']} | " + " | ".join(cells) + " |")
+    out += [
+        "",
+        "## Correct drafts per item (of 6 per model and condition)",
+        "",
+        "| Item | Definition | A: "
+        + " / ".join(m.split("-")[1] for m in MODELS)
+        + " | B: "
+        + " / ".join(m.split("-")[1] for m in MODELS)
+        + " |",
+        "| --- | --- | --- | --- |",
+    ]
+    for iid, item in items.items():
+        if not item["answerable"]:
+            continue
+        cells = []
+        for cond in ("A", "B"):
+            counts = []
+            for model in MODELS:
+                sel = [
+                    r
+                    for r in rows
+                    if r["draft"]["model"] == model
+                    and r["draft"]["condition"] == cond
+                    and r["draft"]["item_id"] == iid
+                ]
+                counts.append(str(sum(correct(r["grade"]) for r in sel)))
+            cells.append(" / ".join(counts))
+        out.append(f"| {iid} | {item['label']} | {cells[0]} | {cells[1]} |")
+    out += [
+        "",
+        "## Failure categories (every failed draft, one category each)",
+        "",
+        "| Category | " + " | ".join(MODELS) + " |",
+        "| --- |" + " --- |" * len(MODELS),
+    ]
+    cats = sorted({category(r) for r in rows} - {""})
+    for c in cats:
+        out.append(
+            f"| {c} | "
+            + " | ".join(
+                str(sum(category(r) == c for r in rows if r["draft"]["model"] == m)) for m in MODELS
+            )
+            + " |"
+        )
+    rounded = [
+        r
+        for r in answerable
+        if "round(" in registry.load(str(items[r["draft"]["item_id"]]["reference"])).sql.lower()
+    ]
+    unrounded = sum("round(" not in r["draft"]["sql"].lower() for r in rounded)
+    out += [
+        "",
+        f"Of {len(rounded)} drafts for definitions that round the creatinine comparison "
+        f"(floating point), {unrounded} do not round it.",
+        "",
+    ]
+    text = "\n".join(out)
+    (ROOT / "evals" / "results.md").write_text(text, encoding="utf-8")
+    print(text)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -139,9 +358,12 @@ def main() -> int:
     r.add_argument("--samples", type=int, default=1)
     r.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh", "max"])
     r.add_argument("--tests", action="store_true", help="also run level 4 (slow)")
+    sub.add_parser("analyze", help="results from the full runs in evals/runs (no API calls)")
     args = parser.parse_args()
     if args.command == "selfcheck":
         return selfcheck()
+    if args.command == "analyze":
+        return analyze()
     return run(args)
 
 

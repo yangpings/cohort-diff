@@ -65,7 +65,7 @@ The demo shares the full MIMIC-IV schema, so the same definitions run on full MI
 - **Downstream result.** Unadjusted odds ratio between membership and in-hospital mortality, with a Woolf 95% CI (log OR ± 1.96·√(1/a + 1/b + 1/c + 1/d)); 0.5 is added to every cell when any cell is 0 (Haldane–Anscombe).
 - **Uncertainty.** Patient-level bootstrap (1,000 resamples; a patient drawn k times contributes all their admissions k times) gives 95% percentile intervals for each pair's Jaccard index and for the ratio of their mortality odds ratios (OR of a / OR of b). An interval for the ratio that excludes 1 means the two definitions disagree about the association, beyond sampling noise. A test checks that patients, not admissions, are resampled.
 - **Scale check.** Wall time of `compare` for each condition, on the demo and (once credentialed) on full MIMIC-IV, on one laptop.
-- **Extension: LLM-drafted definitions** *(planned, branch `cohort-diff-llm`)*. An LLM receives a paper's methods text and the table and column names only (never patient data) and returns a definition through JSON-schema structured output. Each draft is graded by the same oracle and property tests, and by exact agreement with the hand-written definition on synthetic data. Pass rates for 3+ models on a 20-item labeled set, with 95% intervals; every failure is categorized.
+- **Extension: LLM-drafted definitions.** Claude Haiku 5.5, Sonnet 5.5 and Opus 5.5 receive a methods excerpt (condition A) or the definition's full SQL header without its query (condition B), plus the table and column names only (never patient data), and return a definition through JSON-schema structured output. A frozen 20-item set covers all 18 definitions plus 2 papers that state no computable rule. Each draft is graded at four levels: valid output, runs on DuckDB, the same admissions as the reference on synthetic data, and the reference's own tests passing with the draft swapped in. The grader was first validated on all 18 references and on planted bugs. 3 samples per item, two independent runs; intervals resample items, since samples of one item are not independent.
 - **Engineering.** Strict typing, lint and tests on Python 3.11–3.13 in CI; the wheel is built in CI; releases go to PyPI by Trusted Publishing from version tags.
 
 ## Results
@@ -185,13 +185,26 @@ Full MIMIC-IV (about 546,000 admissions) will be timed once credentialed.
 | --- | --- | --- | --- | --- |
 | MIMIC-IV demo | aki / diabetes / readmission | 275 | 3.1 / 2.9 / 1.8 (7 / 6 / 5 definitions; includes 1,000 bootstrap resamples and Python start-up) | Intel i7-12800HX, 64 GB RAM, Windows |
 
-### Extension: LLM-drafted definitions (planned)
+### Extension: LLM-drafted definitions
 
-Not started. Planned on branch `cohort-diff-llm` after v0.1.0: pass rates of LLM-drafted definitions on the oracle tests for 3+ models on a 20-item labeled set, with 95% intervals and every failure categorized.
+684 drafts (3 models × 38 prompts × 3 samples × 2 runs), US$12.34 in API calls. Correct = the same admissions as the reference on synthetic data and no failing reference test; 95% intervals from a bootstrap over the 18 items.
+
+| Model | A: methods text | B: full specification | Said "not stated" (Ye 2025 / Su 2025) |
+| --- | --- | --- | --- |
+| Claude Haiku 5.5 | 44% [23%, 65%] | 70% [51%, 88%] | 6/6 / 5/6 |
+| Claude Sonnet 5.5 | 41% [21%, 61%] | 80% [61%, 94%] | 6/6 / 1/6 |
+| Claude Opus 5.5 | 46% [27%, 66%] | 85% [67%, 100%] | 6/6 / 0/6 |
+
+The two runs agree within 4 percentage points in every cell. Full tables (per item, paired differences, failure categories): `evals/results.md`.
+
+- **The paper text, not the model, limits accuracy.** From methods text alone the three models are indistinguishable (Opus minus Haiku +3%, [−8%, +15%]); given the full specification every model improves (+27% to +39% for the same model, intervals excluding 0) and the larger model leads (Opus minus Haiku +15%, [+4%, +28%]). Kamel Rahimi et al.'s three baselines were never reproduced from the paper's text (0 of 54 drafts) and almost always from the specification (53 of 54); Gupta et al.'s label, whose death rule is only in their code, went from 0 of 18 to 18 of 18.
+- **Larger models computed a rule where the text states none.** Su et al. give no readmission window. Haiku answered "not stated" in 5 of 6 drafts, Sonnet in 1 of 6, Opus in none: their other drafts counted any later ICU admission, with no time limit, and listed the missing window as an assumption. The frozen grading rule counts that as wrong; it is a defensible reading, but a study built on it would silently change the paper's outcome. Where the whole rule was missing (Ye et al. never say how diabetes was identified), all three said so every time.
+- **The floating-point trap catches most drafts.** Of 180 drafts for definitions that round the creatinine comparison, 120 compare 0.3 mg/dL without rounding; `aki_kdigo_48h` was correct in 4 of 36 drafts.
+- **Some failures expose the reference, not the model.** Every draft of `readmit30_any` selects the right admissions on synthetic data but fails one test: the built-in counts a next admission that starts before the index discharge as a readmission, and the models do not. The built-in's own one-line description does not say so either.
 
 ### Correctness
 
-88 tests pass with 99% line coverage on Python 3.11–3.13 (CI). Deliberate breaks show what each kind of test catches:
+112 tests pass with 99% line coverage on Python 3.11–3.13 (CI). Deliberate breaks show what each kind of test catches:
 
 | Deliberate break | Caught by | Not caught by |
 | --- | --- | --- |
@@ -220,6 +233,7 @@ The open demo shows the same pattern in membership on real data: AKI definitions
 - **Shen et al.'s comparison group cannot be reproduced as a cohort.** The paper also excludes patients "who lacked readmission time", so its controls were all readmitted after more than 90 days and patients never readmitted are in neither group. `readmit_shen2025` returns the paper's cases; here, as for every definition, non-members are all other admissions.
 - **The downstream comparison is members vs all other admissions.** For definitions with their own eligibility rules (such as Kamel Rahimi et al.'s first-ICU-stay, day-1-AKI-excluded cohort), the non-members include patients the paper excluded, so the odds ratio is not the comparison the paper made. Restricting the comparison to each definition's eligible population is a planned extension.
 - **Per-patient phenotypes are compared admission by admission.** eMERGE classifies patients and returns all their admissions, so its cohort is weighted toward patients with many admissions (51 admissions from 9 patients on the demo), and its overlap with admission-level definitions mixes the two units.
+- **The LLM eval grades on synthetic data and one model family.** Exact agreement is judged on 2,000 synthetic patients, so a draft can match there and differ on real data; 18 answerable items give wide intervals; all three models are Claude models. For the 8 built-in definitions, condition B adds little, because their SQL headers are four lines.
 - **The odds ratio is unadjusted.** It shows how a reported association can move with the definition, not a causal effect.
 
 ## Trial and error
@@ -244,6 +258,8 @@ What went wrong while building this, and what changed as a result. Analysis prob
 | eMERGE counts insulin as a type 1 drug | In hospital most people with type 2 diabetes get insulin, so 53 of the 65 coded admissions eMERGE misses are lost to its insulin rules, and no demo case qualified by path 1 | Kept as published, since the point is to reproduce the definition; reported in Results as a property of applying a longitudinal-EHR rule to inpatient data |
 | `dm_zhang2023_emerge` has no deaths on the demo (51 admissions, 9 patients) | Two of its ratio intervals exclude 1 only because of the zero-cell correction | Marked zero-cell in the Results tables and not interpreted |
 | Four demo rows (Charlson and Cheng pairs) had been placed in the synthetic pair table | A reader would compare demo intervals with synthetic ones | Moved to the demo table when the eMERGE rows were added |
+| The first LLM pilot scored three careful drafts at Jaccard 0.0 | The synthetic generator left `labevents.valueuom` blank, so drafts filtering on 'mg/dL' (correct for MIMIC-IV) matched nothing; the eval would have punished correct work | Read the six drafts before trusting the scores; the generator now records MIMIC-IV's units (no synthetic number in this README changed); regraded and rerun before the full run |
+| Every LLM draft of `readmit30_any` fails a reference test | The built-in counts an overlapping next admission as a readmission, which its one-line description never states; the models' stricter reading is defensible | Reported as a finding about the reference, not a model error; the definition is left unchanged so the published results stay reproducible |
 | A wrong time window (24 h instead of KDIGO's 48 h) still produces a plausible-looking cohort | Window edges are where cohort SQL is most often wrong, and a smaller cohort doesn't look broken | Deliberately changing the window to 24 h failed two tests: SQL vs oracle on synthetic data (admissions missing from the SQL cohort), and the Hypothesis property test, which shrank the failure to the minimal case: creatinine 1.0 then 2.0 mg/dL, 25 hours apart |
 
 ### Engineering
@@ -252,6 +268,8 @@ What went wrong while building this, and what changed as a result. Analysis prob
 | --- | --- | --- | --- |
 | Setup | The parent lab repository saw the whole Level 1 folder (both projects and the MIMIC-IV demo data) as untracked files | The parent's `.gitignore` had no rule for that folder, although earlier notes said it did | Added the folder to the parent's `.gitignore` before any commit; nothing had been committed. Lesson: verify ignore rules with `git check-ignore -v` and `git status`, not from notes |
 | CLI | The Part 5 commit had 2 files instead of 3: the CI workflow still lacked the release job | One of three files to replace was skipped; the commit itself succeeded, so nothing looked wrong | Caught by `git show --stat HEAD` before pushing; replaced the workflow and folded it in with `git commit --amend`. Lesson: compare the commit's file list with the list you expected before `git push` |
+| LLM eval | The first grader version failed all 18 correct references at level 4 | Swapping a draft in for the reference also replaced `registry.load`, which broke the test that an unknown name raises an error | Caught by validating the grader on the references before any model ran; it now patches only `registry.builtin`, and a planted bug that only level 4 can catch proves the swap works |
+| LLM eval | The full run was paid for twice (US$12.34 instead of about US$6) | A laptop shutdown after the first run looked like a crash mid-run, so it was started again from scratch | Kept both as a replication (they agree within 4 points); a `--resume` option now continues an interrupted file instead |
 | Release | Every CI job warned that Node.js 20 is deprecated | `actions/checkout@v4` and `astral-sh/setup-uv@v5` target Node.js 20, which GitHub is retiring | Warnings only (the TestPyPI rehearsal published). Bumped to `checkout@v5` and `setup-uv@v7` in the release commit, as in ehr-asof. Lesson: read CI annotations even when jobs are green |
 
 ## Conclusions
@@ -268,6 +286,10 @@ What went wrong while building this, and what changed as a result. Analysis prob
 | `src/cohort_diff/compare.py` | Jaccard, overlap table, cohort description, mortality odds ratio, patient-level bootstrap, markdown report |
 | `src/cohort_diff/synth.py` | MIMIC-shaped synthetic data |
 | `src/cohort_diff/cli.py` | `list`, `run`, `synth`, `compare` |
+| `src/cohort_diff/llm.py` | Prompt and structured-output call for LLM-drafted definitions (optional `[llm]` extra) |
+| `src/cohort_diff/grade.py` | Four-level grader for drafts |
+| `scripts/llm_eval.py` | Grader self-check, eval runs, analysis |
+| `evals/` | The frozen 20-item set, every run's drafts and grades, and `results.md` |
 | `tests/` | Unit, oracle and property-based (Hypothesis) tests |
 | `CLAUDE.md` | Project rules for AI coding agents (commands, testing, data safety) |
 | `docs/AI_LOG.md` | What was delegated to AI tools, what they got wrong, and how it was caught |
